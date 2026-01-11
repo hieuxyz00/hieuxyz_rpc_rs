@@ -1,0 +1,37 @@
+[package]
+name = "hieuxyz_rpc"
+version = "0.0.1"
+edition = "2021"
+authors = ["hieuxyz <email_của_bạn@example.com>"]
+description = "A powerful Discord Rich Presence library for Rust."
+license = "ISC"
+repository = "https://github.com/hieuxyz00/hieuxyz_rpc_rs"
+readme = "README.md"
+keywords = ["discord", "rpc", "rich-presence", "api"]
+categories = ["api-bindings", "network-programming"]
+exclude = [
+    ".env",
+    ".gitignore",
+    "examples/*",
+    "target/*"
+]
+[dependencies]
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "signal", "net"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "stream", "rustls"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_repr = "0.1"
+flate2 = { version = "1.0", features = ["rust_backend"], default-features = false }
+url = "2.5"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
+
+[dev-dependencies]
+dotenv = "0.15"
+
+[profile.dev.package."*"]
+debug = 0
+opt-level = 3
