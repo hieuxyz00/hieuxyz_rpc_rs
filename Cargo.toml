@@ -2,8 +2,8 @@
 name = "hieuxyz_rpc"
 version = "0.0.1"
 edition = "2021"
-authors = ["hieuxyz <email_của_bạn@example.com>"]
-description = "A powerful Discord Rich Presence library for Rust."
+authors = ["hieuxyz khongbt446@gmail.com"]
+description = "A Discord Rich Presence library for Rust."
 license = "ISC"
 repository = "https://github.com/hieuxyz00/hieuxyz_rpc_rs"
 readme = "README.md"
