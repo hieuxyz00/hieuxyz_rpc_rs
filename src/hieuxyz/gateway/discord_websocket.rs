@@ -12,14 +12,21 @@ use url::Url;
 use crate::hieuxyz::utils::logger::logger;
 use crate::hieuxyz::gateway::entities::{opcode::OpCode, types::*, identify::*};
 
-/// Manages the WebSocket connection to the Discord Gateway.
+#[derive(Debug)]
+pub enum GatewayEvent {
+    Ready(DiscordUser),
+    Resumed,
+    Disconnected,
+}
+
+/// Manage WebSocket connections to Discord Gateway.
+/// Handles low-level operations like heartbeating, identifying, and resuming.
 pub struct DiscordWebSocket {
     token: String,
     options: DiscordWebSocketOptions,
     cmd_tx: mpsc::Sender<WebSocketCommand>, 
     pub user: Option<DiscordUser>,
-    /// A channel that sends the user info once the READY event is received.
-    pub readyPromise: mpsc::Receiver<DiscordUser>,
+    pub observer_tx: mpsc::Sender<GatewayEvent>,
 }
 
 #[derive(Clone)]
@@ -35,9 +42,12 @@ enum WebSocketCommand {
 }
 
 impl DiscordWebSocket {
-    pub fn new(token: String, options: DiscordWebSocketOptions) -> Self {
+    /// Create a DiscordWebSocket instance.
+    /// @param {string} token - Discord user token for authentication.
+    /// @param {DiscordWebSocketOptions} options - Configuration options for the WebSocket client.
+    /// @throws {Error} If the token is invalid.
+    pub fn new(token: String, options: DiscordWebSocketOptions, notify_tx: mpsc::Sender<GatewayEvent>) -> Self {
         let (tx, _) = mpsc::channel(1);
-        let (_, rx) = mpsc::channel(1);
         
         if !Self::isTokenValid(&token) {
              panic!("Invalid token provided.");
@@ -48,26 +58,23 @@ impl DiscordWebSocket {
             options,
             cmd_tx: tx,
             user: None,
-            readyPromise: rx,
+            observer_tx: notify_tx,
         }
     }
 
     fn isTokenValid(token: &str) -> bool {
-        let parts: Vec<&str> = token.split('.').collect();
-        if parts.len() == 3 {
-            return !parts[0].is_empty() && !parts[1].is_empty() && parts[2].len() >= 20;
-        }
-        false
+        token.split('.').count() >= 3
     }
 
-    /// Initiates the WebSocket connection in a background task.
+    /// Initiate connection to Discord Gateway.
+    /// If there was a previous session, it will try to resume.
     pub fn connect(&mut self) {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(32);
-        let (ready_tx, ready_rx) = mpsc::channel(1);
         self.cmd_tx = cmd_tx;
-        self.readyPromise = ready_rx;
+        
         let token = self.token.clone();
         let options = self.options.clone();
+        let observer = self.observer_tx.clone();
 
         tokio::spawn(async move {
             let mut session_id: Option<String> = None;
@@ -108,6 +115,7 @@ impl DiscordWebSocket {
                         let mut last_heartbeat_sent = Instant::now();
                         let mut has_sent_first_heartbeat = false;
                         let (socket_out_tx, mut socket_out_rx) = mpsc::channel::<Message>(32);
+                        
                         let write_handle = tokio::spawn(async move {
                             while let Some(msg) = socket_out_rx.recv().await {
                                 if write.send(msg).await.is_err() { break; }
@@ -136,7 +144,6 @@ impl DiscordWebSocket {
                                                     let code = frame.as_ref().map(|f| f.code.into()).unwrap_or(1000);
                                                     let reason = frame.as_ref().map(|f| f.reason.to_string()).unwrap_or_default();
                                                     logger::warn(&format!("Connection closed: {} - {}", code, reason));
-                                                    
                                                     if code == 4004 || code == 4999 {
                                                         session_id = None; sequence = None; resume_gateway_url = None;
                                                     }
@@ -149,6 +156,7 @@ impl DiscordWebSocket {
                                                          logger::info("Not attempting to reconnect based on close code and client options.");
                                                          permanent_close = true;
                                                     }
+                                                    let _ = observer.send(GatewayEvent::Disconnected).await;
                                                     break;
                                                 },
                                                 _ => None,
@@ -169,13 +177,15 @@ impl DiscordWebSocket {
                                                             has_sent_first_heartbeat = false;
                                                             if let Some(t) = hb_task { t.abort(); }
                                                             let hb_tx_clone = hb_tx.clone();
-                                                            
                                                             hb_task = Some(tokio::spawn(async move {
                                                                 let jitter = (hb_interval as f64 * rand::random::<f64>()) as u64;
                                                                 tokio::time::sleep(Duration::from_millis(jitter)).await;
                                                                 if hb_tx_clone.send(()).await.is_err() { return; }
+                                                                
                                                                 let mut interval = tokio::time::interval(Duration::from_millis(hb_interval));
-                                                                interval.tick().await; 
+                                                                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                                                                interval.tick().await;
+                                                                
                                                                 loop {
                                                                     interval.tick().await;
                                                                     if hb_tx_clone.send(()).await.is_err() { break; }
@@ -210,9 +220,10 @@ impl DiscordWebSocket {
                                                                     logger::info(&format!("Session READY. Session ID: {}. Resume URL set.", session_id.as_ref().unwrap()));
                                                                     
                                                                     let user: DiscordUser = serde_json::from_value(d["user"].clone()).unwrap();
-                                                                    let _ = ready_tx.send(user).await;
+                                                                    let _ = observer.send(GatewayEvent::Ready(user)).await;
                                                                 } else if t == "RESUMED" {
                                                                     logger::info("The session has been successfully resumed.");
+                                                                    let _ = observer.send(GatewayEvent::Resumed).await;
                                                                 }
                                                             }
                                                         },
@@ -258,7 +269,7 @@ impl DiscordWebSocket {
 
                                 _ = hb_rx.recv() => {
                                     if has_sent_first_heartbeat {
-                                        if last_ack_received < last_heartbeat_sent {
+                                        if last_ack_received < last_heartbeat_sent.checked_sub(Duration::from_secs(5)).unwrap_or(last_heartbeat_sent) {
                                             logger::warn("Heartbeat ACK missing. Connection is zombie. Terminating to resume...");
                                             break;
                                         }
@@ -314,14 +325,16 @@ impl DiscordWebSocket {
         });
     }
 
-    /// Sends a presence update payload to the gateway.
+    /// Send presence update payload to Gateway.
+    /// @param {PresenceUpdatePayload} presence - Payload update status to send.
     pub async fn sendActivity(&self, presence: PresenceUpdatePayload) {
         let json = json!({ "op": OpCode::PRESENCE_UPDATE, "d": presence });
         let _ = self.cmd_tx.send(WebSocketCommand::SendJson(json)).await;
         logger::info("Presence update sent.");
     }
 
-    /// Closes the connection.
+    /// Closes the WebSocket connection.
+    /// @param {boolean} force If true, prevents any automatic reconnection attempts.
     pub async fn close(&self, force: bool) {
         let _ = self.cmd_tx.send(WebSocketCommand::Close(force)).await;
     }

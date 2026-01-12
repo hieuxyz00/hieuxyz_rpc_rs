@@ -1,6 +1,6 @@
 [package]
 name = "hieuxyz_rpc"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 authors = ["hieuxyz khongbt446@gmail.com"]
 description = "A Discord Rich Presence library for Rust."
@@ -17,7 +17,7 @@ exclude = [
 ]
 [dependencies]
 tokio = { version = "1.35", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "signal", "net"] }
-tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["rustls-tls-webpki-roots", "handshake", "connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "stream", "rustls"] }
 tokio-util = { version = "0.7", features = ["codec"] }
@@ -27,11 +27,19 @@ serde_repr = "0.1"
 flate2 = { version = "1.0", features = ["rust_backend"], default-features = false }
 url = "2.5"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
+rand = { version = "0.9", default-features = false, features = ["std_rng"] }
 
 [dev-dependencies]
 dotenv = "0.15"
+tikv-jemallocator = "0.6"
 
 [profile.dev.package."*"]
 debug = 0
 opt-level = 3
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

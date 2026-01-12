@@ -21,7 +21,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hieuxyz_rpc = "0.0.1"
+hieuxyz_rpc = "0.0.2"
 tokio = { version = "1", features = ["full"] }
 ```
 

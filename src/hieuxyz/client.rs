@@ -1,10 +1,10 @@
 #![allow(non_snake_case)]
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use std::sync::Arc;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
 
-use crate::hieuxyz::gateway::discord_websocket::{DiscordWebSocket, DiscordWebSocketOptions};
+use crate::hieuxyz::gateway::discord_websocket::{DiscordWebSocket, DiscordWebSocketOptions, GatewayEvent};
 use crate::hieuxyz::gateway::entities::{identify::ClientProperties, types::{PresenceUpdatePayload, DiscordUser, UserFlags}};
 use crate::hieuxyz::rpc::{hieuxyz_rpc::HieuxyzRPC, image_service::ImageService};
 use crate::hieuxyz::utils::logger::logger;
@@ -55,6 +55,8 @@ pub struct Client {
     /// Information about the logged-in user.
     /// Populated after run() resolves.
     pub user: Arc<RwLock<Option<DiscordUser>>>,
+    /// Receiver for gateway events (Ready, Resumed)
+    gateway_observer_rx: Arc<Mutex<mpsc::Receiver<GatewayEvent>>>,
 }
 
 impl Client {
@@ -73,13 +75,15 @@ impl Client {
         }
         let imageService = ImageService::new(options.apiBaseUrl);
         let rpcs_vec = Arc::new(RwLock::new(Vec::new()));
+        let (notify_tx, notify_rx) = mpsc::channel(10);
         let ws_options = DiscordWebSocketOptions {
              alwaysReconnect: options.alwaysReconnect.unwrap_or(false),
              properties: options.properties,
              connectionTimeout: options.connectionTimeout.unwrap_or(30000),
         };
-        let websocket = DiscordWebSocket::new(options.token.clone(), ws_options);
+        let websocket = DiscordWebSocket::new(options.token.clone(), ws_options, notify_tx);
         let rpc = HieuxyzRPC::new(imageService.clone(), Arc::new(|| Box::pin(async {})));
+        
         let client = Arc::new(Self {
             _token: options.token,
             imageService,
@@ -87,6 +91,7 @@ impl Client {
             websocket: Arc::new(Mutex::new(Some(websocket))),
             rpc: Arc::new(RwLock::new(rpc)),
             user: Arc::new(RwLock::new(None)),
+            gateway_observer_rx: Arc::new(Mutex::new(notify_rx)),
         });
         client.printAbout();
         client
@@ -99,12 +104,16 @@ impl Client {
     ///
     /// Returns the `DiscordUser` object containing profile information when ready.
     pub async fn run(self: &Arc<Self>) -> DiscordUser {
+        let me_weak = Arc::downgrade(self);
+        let cb = Arc::new(move || {
+             let weak = me_weak.clone();
+             Box::pin(async move { 
+                 if let Some(strong) = weak.upgrade() {
+                     strong.sendAllActivities().await; 
+                 }
+             }) as BoxFuture<'static, ()>
+        });
         {
-             let me = self.clone();
-             let cb = Arc::new(move || {
-                 let c = me.clone();
-                 Box::pin(async move { c.sendAllActivities().await; }) as BoxFuture<'static, ()>
-             });
              let mut default_rpc = self.rpc.write().await;
              *default_rpc = HieuxyzRPC::new(self.imageService.clone(), cb.clone());
              self.rpcs.write().await.push(self.rpc.clone());
@@ -114,14 +123,37 @@ impl Client {
         if let Some(w) = ws_guard.as_mut() {
              w.connect();
              logger::info("Waiting for Discord session to be ready...");
-             let user = w.readyPromise.recv().await.unwrap();
+             let mut rx = self.gateway_observer_rx.lock().await;
+             let user = loop {
+                 match rx.recv().await {
+                     Some(GatewayEvent::Ready(u)) => break u,
+                     Some(_) => continue, 
+                     None => panic!("Gateway channel closed unexpectedly"),
+                 }
+             };
              *self.user.write().await = Some(user.clone());
-
              self.logUserProfile(&user);
-             logger::info("Client is ready to send Rich Presence updates.");
-             return user;
+             drop(rx);
+        } else {
+            panic!("WebSocket not initialized");
         }
-        panic!("WebSocket not initialized");
+        let self_clone = self.clone();
+        tokio::spawn(async move {
+            let mut rx = self_clone.gateway_observer_rx.lock().await;
+            while let Some(event) = rx.recv().await {
+                match event {
+                    GatewayEvent::Ready(_) | GatewayEvent::Resumed => {
+                        logger::info("Connection restored/ready. Re-sending Rich Presence...");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        self_clone.sendAllActivities().await;
+                    },
+                    _ => {}
+                }
+            }
+        });
+
+        logger::info("Client is ready to send Rich Presence updates.");
+        self.user.read().await.clone().unwrap()
     }
 
     /// Create a new RPC instance.
@@ -131,10 +163,14 @@ impl Client {
     ///
     /// A new RPC builder instance wrapped in Arc<RwLock>.
     pub async fn createRPC(self: &Arc<Self>) -> Arc<RwLock<HieuxyzRPC>> {
-        let me = self.clone();
+        let me_weak = Arc::downgrade(self);
         let cb = Arc::new(move || {
-             let c = me.clone();
-             Box::pin(async move { c.sendAllActivities().await; }) as BoxFuture<'static, ()>
+             let weak = me_weak.clone();
+             Box::pin(async move { 
+                 if let Some(strong) = weak.upgrade() {
+                     strong.sendAllActivities().await; 
+                 }
+             }) as BoxFuture<'static, ()>
         });
 
         let rpc = HieuxyzRPC::new(self.imageService.clone(), cb);
@@ -153,8 +189,9 @@ impl Client {
         if let Some(pos) = list.iter().position(|x| Arc::ptr_eq(x, &rpcInstance)) {
             let rpc = list.remove(pos);
             rpc.write().await.destroy();
-            self.sendAllActivities().await;
         }
+        drop(list); 
+        self.sendAllActivities().await;
     }
 
     /// Aggregates activities from all RPC instances and sends them to Discord.
@@ -208,7 +245,7 @@ impl Client {
  | | | | |  __/ |_| |>  <| |_| |/ /
  |_| |_|_|\___|\__,_/_/\_\\__, /___|
                           |___/
-  @hieuxyz/rpc v0.0.1
+  hieuxyz_rpc v0.0.2
   A powerful Discord Rich Presence library.
   Developed by: hieuxyz
         "#);
