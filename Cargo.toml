@@ -1,6 +1,6 @@
 [package]
 name = "hieuxyz_rpc"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 authors = ["hieuxyz khongbt446@gmail.com"]
 description = "A Discord Rich Presence library for Rust."

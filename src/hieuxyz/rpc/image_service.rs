@@ -16,7 +16,15 @@ pub struct DiscordAsset {
 
 #[derive(Deserialize)]
 struct ImageResponse {
-    id: String,
+    status: u16,
+    id: Option<String>,
+    message_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UploadResult {
+    pub id: String,
+    pub message_id: Option<String>,
 }
 
 /// Service handling image uploads, external proxying, and asset renewal.
@@ -35,7 +43,7 @@ impl ImageService {
     }
 
     /// Requests a proxy URL for an external image.
-    pub async fn getExternalUrl(&self, url: &str) -> Option<String> {
+    pub async fn getExternalUrl(&self, url: &str) -> Option<UploadResult> {
         let mut target_url = match Url::parse(&format!("{}/image", self.apiBaseUrl)) {
             Ok(u) => u,
             Err(e) => {
@@ -48,7 +56,12 @@ impl ImageService {
             Ok(res) => {
                 if let Ok(bytes) = res.bytes().await {
                     if let Ok(data) = serde_json::from_slice::<ImageResponse>(&bytes) {
-                        return Some(data.id);
+                        if data.status == 200 && data.id.is_some() {
+                            return Some(UploadResult {
+                                id: data.id.unwrap(),
+                                message_id: None
+                            });
+                        }
                     }
                 }
             },
@@ -58,7 +71,7 @@ impl ImageService {
     }
 
     /// Uploads a local file to the image service.
-    pub async fn uploadImage(&self, filePath: &str, fileName: &str) -> Option<String> {
+    pub async fn uploadImage(&self, filePath: &str, fileName: &str) -> Option<UploadResult> {
         if !Path::new(filePath).exists() {
             logger::error(&format!("File not found at path: {}", filePath));
             return None;
@@ -82,7 +95,12 @@ impl ImageService {
             Ok(res) => {
                  if let Ok(bytes) = res.bytes().await {
                     if let Ok(data) = serde_json::from_slice::<ImageResponse>(&bytes) {
-                        return Some(data.id);
+                        if data.status == 200 && data.id.is_some() {
+                            return Some(UploadResult {
+                                id: data.id.unwrap(),
+                                message_id: data.message_id
+                            });
+                        }
                     }
                 }
             },
@@ -99,8 +117,10 @@ impl ImageService {
             Ok(res) => {
                  if let Ok(bytes) = res.bytes().await {
                     if let Ok(data) = serde_json::from_slice::<ImageResponse>(&bytes) {
-                        logger::info(&format!("Successfully renewed asset: {}", assetId));
-                        return Some(data.id);
+                        if data.status == 200 && data.id.is_some() {
+                            logger::info(&format!("Successfully renewed asset: {}", assetId));
+                            return data.id;
+                        }
                     }
                 }
             },

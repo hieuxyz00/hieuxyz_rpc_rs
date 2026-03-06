@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-use super::image_service::ImageService;
+use super::image_service::{ImageService, UploadResult};
 use std::path::Path;
 use url::Url;
 
@@ -81,15 +81,16 @@ impl RpcImage {
 
     /// Resolves the image source into a string key usable by Discord.
     /// May involve HTTP requests (uploads/proxying).
-    pub async fn resolve(&self, imageService: &ImageService) -> Option<String> {
+    pub async fn resolve(&self, imageService: &ImageService) -> Option<UploadResult> {
         match self {
             RpcImage::Discord(key) => {
-                if key.starts_with("mp:") { Some(key.clone()) } else { Some(format!("mp:{}", key)) }
+                let id = if key.starts_with("mp:") { key.clone() } else { format!("mp:{}", key) };
+                Some(UploadResult { id, message_id: None })
             },
             RpcImage::External(url) => imageService.getExternalUrl(url).await,
             RpcImage::Local { path, name } => imageService.uploadImage(path, name).await,
-            RpcImage::Raw(key) => Some(key.clone()),
-            RpcImage::Application(name) => Some(format!("app_asset:{}", name)),
+            RpcImage::Raw(key) => Some(UploadResult { id: key.clone(), message_id: None }),
+            RpcImage::Application(name) => Some(UploadResult { id: format!("app_asset:{}", name), message_id: None }),
         }
     }
 

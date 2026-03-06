@@ -245,7 +245,7 @@ impl Client {
  | | | | |  __/ |_| |>  <| |_| |/ /
  |_| |_|_|\___|\__,_/_/\_\\__, /___|
                           |___/
-  hieuxyz_rpc v0.0.2
+  hieuxyz_rpc v0.0.3
   A powerful Discord Rich Presence library.
   Developed by: hieuxyz
         "#);
